@@ -1,0 +1,8 @@
+depthai==2.25.1.0
+numba==0.58.1
+numpy==1.24.3
+opencv_contrib_python==4.4.0.46
+opencv_python==4.4.0.46
+opencv_python_headless==4.4.0.46
+pyrealsense2==2.54.2.5684
+tqdm==4.66.1
