@@ -248,7 +248,8 @@ def main(args):
                 left_vanilla_rectified_data = out_queue_left_vanilla_rectified.get() 
                 right_vanilla_rectified_data = out_queue_right_vanilla_rectified.get() 
 
-                timestamp_OAK = vanilla_disparity_data.getTimestamp().total_seconds()+diff
+                #timestamp_OAK = vanilla_disparity_data.getTimestamp().total_seconds()+diff
+                timestamp_OAK = vanilla_disparity_data.getTimestamp(dai.CameraExposureOffset.END).total_seconds()+diff
                
                 #if the L515 sliding window is too new then drop some OAK frames
                 if not l515_sliding_window.is_window_too_new("depth", timestamp_OAK, SYNC_TH_MS):                        
