@@ -7,6 +7,8 @@ import threading
 from datetime import timedelta
 from mycoda import SlidingWindowDevice, L515FrameWrapper
 import argparse
+import os
+import json
 
 from vpp_standalone import vpp
 from filter import occlusion_heuristic
@@ -19,10 +21,32 @@ SYNC_TH_MS = 20/1000.0
 TIMEOUT_SGM = 0.5
 
 MAX_BUFFER_SIZE = 3
-RT_OAK_L515 = np.loadtxt("RT_FINAL.txt")
-K_L515 = np.loadtxt("K_L515.txt")
-K_OAK = np.loadtxt("K_OAK.txt")
-OAK_BASELINE = np.loadtxt("BASELINE_OAK.txt")
+CALIB_PATH = "l515_oak_calib"
+RT_OAK_L515 = np.loadtxt(f"{CALIB_PATH}/RT_FINAL.txt")
+# K_L515 = np.loadtxt(f"{CALIB_PATH}/K_L515.txt")
+# K_OAK = np.loadtxt(f"{CALIB_PATH}/K_OAK.txt")
+# OAK_BASELINE = np.loadtxt(f"{CALIB_PATH}/BASELINE_OAK.txt")
+
+L515_CALIB_FILE = "l515_calib.json"
+OAK_CALIB_FILE = "oak_calib.json"
+
+with open(os.path.join(CALIB_PATH, OAK_CALIB_FILE), "r") as f:
+    oak_calib_data = json.load(f)
+
+with open(os.path.join(CALIB_PATH, L515_CALIB_FILE), "r") as f:
+    l515_calib_data = json.load(f)
+
+OAK_BASELINE = oak_calib_data["baseline"]
+OAK_RESOLUTION = dai.MonoCameraProperties.SensorResolution.THE_400_P
+
+OAK_RESOLUTION_DICT = {
+    dai.MonoCameraProperties.SensorResolution.THE_400_P: (400, 640),
+    dai.MonoCameraProperties.SensorResolution.THE_480_P: (480, 640),
+    dai.MonoCameraProperties.SensorResolution.THE_720_P: (720, 1280),
+    dai.MonoCameraProperties.SensorResolution.THE_800_P: (800, 1280),
+}
+
+K_OAK = np.array(oak_calib_data[f"K_left_{OAK_RESOLUTION_DICT[OAK_RESOLUTION][0]}x{OAK_RESOLUTION_DICT[OAK_RESOLUTION][1]}"])
 
 OAK_SUBPIXEL = True
 OAK_LRC = True
@@ -54,6 +78,9 @@ L515_VISUAL_PRESET_DICT = {
     "short_range": RS2_L500_VISUAL_PRESET_SHORT_RANGE,
 }
 
+L515_RESOLUTION = (480, 640)
+K_L515 = np.array(l515_calib_data[f"K_depth_{L515_RESOLUTION[0]}x{L515_RESOLUTION[1]}"])
+
 DISP_MAX = 96
 
 #Thread-safe sliding window to store L515 frames
@@ -72,12 +99,14 @@ def slave(thread_id, args):
 
     pipeline_lidar = rs.pipeline() 
     config = rs.config()
-    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, L515_FPS) 
-    config.enable_stream(rs.stream.confidence, 640, 480, rs.format.raw8, L515_FPS) 
-    
+    config.enable_stream(rs.stream.depth, L515_RESOLUTION[1], L515_RESOLUTION[0], rs.format.z16, L515_FPS) 
+    config.enable_stream(rs.stream.confidence, L515_RESOLUTION[1], L515_RESOLUTION[0], rs.format.raw8, L515_FPS) 
+        
     try:
         pipeline_lidar.start(config)
         mylog(f"Lidar ready")
+
+        align = rs.align(rs.stream.depth)
 
         #Enable clock sync (with host: the master clock)
         depth_sensor = pipeline_lidar.get_active_profile().get_device().first_depth_sensor()
@@ -88,6 +117,7 @@ def slave(thread_id, args):
         #Fill sliding window until stop condition
         while not stop_condition_slave: 
             frames = pipeline_lidar.wait_for_frames()
+            frames = align.process(frames)
             depth_frame = frames.get_depth_frame()
             confidence_frame = frames.first(rs.stream.confidence).as_frame() if frames.first(rs.stream.confidence) else None
 
@@ -131,9 +161,9 @@ def main(args):
     vpp_sgm_node = pipeline_OAK.createStereoDepth()
 
     # Configure cameras: set fps lower than L515 to better accumulate depth frames
-    left_node.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)  
+    left_node.setResolution(OAK_RESOLUTION)  
     left_node.setFps(OAK_FPS) 
-    right_node.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)  
+    right_node.setResolution(OAK_RESOLUTION)  
     right_node.setFps(OAK_FPS)  
     left_node.setCamera("left")
     right_node.setCamera("right")
@@ -314,7 +344,7 @@ def main(args):
                             left_vpp_data = dai.ImgFrame()
                             left_vpp_data.setData(cv2.cvtColor(left_vpp, cv2.COLOR_BGR2GRAY).flatten())
                             left_vpp_data.setTimestamp(left_vanilla_rectified_data.getTimestamp())
-                            left_vpp_data.setInstanceNum(dai.CameraBoardSocket.LEFT)
+                            left_vpp_data.setInstanceNum(dai.CameraBoardSocket.CAM_B)
                             left_vpp_data.setType(dai.ImgFrame.Type.RAW8)
                             left_vpp_data.setWidth(W_oak)
                             left_vpp_data.setHeight(H_oak)
@@ -323,7 +353,7 @@ def main(args):
                             right_vpp_data = dai.ImgFrame()
                             right_vpp_data.setData(cv2.cvtColor(right_vpp, cv2.COLOR_BGR2GRAY).flatten())
                             right_vpp_data.setTimestamp(right_vanilla_rectified_data.getTimestamp())
-                            right_vpp_data.setInstanceNum(dai.CameraBoardSocket.RIGHT)
+                            right_vpp_data.setInstanceNum(dai.CameraBoardSocket.CAM_C)
                             right_vpp_data.setType(dai.ImgFrame.Type.RAW8)
                             right_vpp_data.setWidth(W_oak)
                             right_vpp_data.setHeight(H_oak)
@@ -415,7 +445,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="L515+OAK SGM demo.")
     
     # Add a positional argument for the save folder path
-    parser.add_argument("--l515_preset", type=str, default="default", required=False, help=f"L515 preset configuration ({L515_VISUAL_PRESET_DICT.keys()})")
+    parser.add_argument("--l515_preset", type=str, default="short_range", required=False, help=f"L515 preset configuration ({L515_VISUAL_PRESET_DICT.keys()})")
     parser.add_argument("--verbose", action='store_true')
     
     # Parse the command-line arguments

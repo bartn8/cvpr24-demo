@@ -1,4 +1,3 @@
-# %%
 import cv2
 import numpy as np
 import glob
@@ -6,8 +5,7 @@ import tqdm
 import os
 import json
 import argparse
-
-# %%
+import shutil
 
 # Create the argument parser
 parser = argparse.ArgumentParser(description="L515+OAK calibration script.")
@@ -16,6 +14,8 @@ parser = argparse.ArgumentParser(description="L515+OAK calibration script.")
 parser.add_argument("--dataset_dir", type=str, required=True, help="Path to the chessboard folder")
 parser.add_argument("--square_size", type=int, default=17, help="Length of chessboard square in mm.")
 parser.add_argument("--grid_size", nargs='+', default=[9,6], help="Chessboard pattern size")
+parser.add_argument("--initial_guess", type=str, default=None, help="Initial guess for the RT matrix")
+parser.add_argument("--output_dir", type=str, required=True, help="Output for for the matrices")
 
 # Parse the command-line arguments
 args = parser.parse_args()
@@ -24,9 +24,8 @@ args = parser.parse_args()
 dataset_path = args.dataset_dir
 
 square_size = args.square_size / 1000.0
-chessboard_grid_size = tuple(args.grid_size)
+chessboard_grid_size = tuple([int(i) for i in args.grid_size])
 
-# %%
 L515_SAVE_FOLDER = "l515"
 L515_COLOR_FOLDER = "color"
 L515_DEPTH_FOLDER = "depth"
@@ -43,41 +42,27 @@ OAK_CALIB_FILE = "calib.json"
 
 #Assume a folder with sinchronized depth frames
 
-# %%
-# utils
-
-def transform_inv(T):
-    T_inv = np.eye(4)
-    T_inv[:3,:3] = T[:3,:3].T
-    T_inv[:3,3] = -1.0 * ( T_inv[:3,:3] @ T[:3,3] )
-    return T_inv
-
-# %%
 with open(os.path.join(dataset_path, OAK_SAVE_FOLDER, OAK_CALIB_FILE), "r") as f:
     oak_calib_data = json.load(f)
 
 with open(os.path.join(dataset_path, L515_SAVE_FOLDER, L515_CALIB_FILE), "r") as f:
     l515_calib_data = json.load(f)
 
-K_oak = np.array(oak_calib_data["K_left"])
-K_l515 = np.array(l515_calib_data["K_depth"])
-K_l515_color = np.array(l515_calib_data["K_color"])
+# RT_L515_DEPTH_COLOR = np.array(l515_calib_data["RT_depth_color"])
+# RT_L515_COLOR_DEPTH = np.array(l515_calib_data["RT_color_depth"])
 
-RT_L515_DEPTH_COLOR = np.array(l515_calib_data["RT_depth_color"])
-RT_L515_COLOR_DEPTH = np.array(l515_calib_data["RT_color_depth"])
 
-# %%
 #undistort L515 if necessary -> seems not..
 # D_l515 = np.loadtxt("l515_depth_distortion.txt")
 D_l515 = np.zeros(5)
 
-# %%
+
 #Do global registration on all dataset... No use CAD to get initial RT
 #Format: RT_dst_src
 
 # Suppose Z-axis rotation >> X-axis and Y-axis rotation
-if os.path.exists("RT_FINAL.txt"):
-    initial_RT_OAK_L515 = np.loadtxt("RT_FINAL.txt")
+if args.initial_guess is not None and os.path.exists(args.initial_guess):
+    initial_RT_OAK_L515 = np.loadtxt(args.initial_guess)
 else:
 
     _initial_rot_vec_1 = np.array([[0.001,0.001,0.01]], dtype=np.float32) * np.random.randn(1,3)
@@ -90,7 +75,7 @@ else:
 
 print(initial_RT_OAK_L515)
 
-# %%
+
 #THIS WORKS!!!!!
 # square_size = 17 / 1000.0
 # # square_size = 50 / 1000.0
@@ -119,12 +104,15 @@ img_size = (None, None)
 for l515_ir, oak_left in tqdm.tqdm(zip(l515_irs, oak_lefts), total=len(l515_irs)):
     left = cv2.imread(l515_ir)
     left = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)
+    H, W = left.shape[:2]
+    K_l515 = np.array(l515_calib_data[f"K_depth_{H}x{W}"])  
 
     img_size = left.shape[-1], left.shape[-2]
 
     right = cv2.imread(oak_left)
     right = cv2.cvtColor(right, cv2.COLOR_BGR2GRAY)
-
+    H, W = right.shape[:2]
+    K_oak = np.array(oak_calib_data[f"K_left_{H}x{W}"])
 
     # Find the chess board corners
     ret_left, left_corners = cv2.findChessboardCorners(left, chessboard_grid_size, None)
@@ -172,8 +160,11 @@ print(f"RMS: {retval}")
 RT_final = np.eye(4)
 RT_final[:3,:3] = R
 RT_final[:3, 3] = T.flatten()
-RT_final = transform_inv(RT_L515_DEPTH_COLOR @ transform_inv(RT_final))
 print(RT_final)
-np.savetxt("RT_FINAL.txt", RT_final)
 
+np.savetxt(f"{args.output_dir}/RT_FINAL.txt", RT_final)
+
+#copy calibration files
+shutil.copyfile(os.path.join(dataset_path, L515_SAVE_FOLDER, L515_CALIB_FILE), f"{args.output_dir}/l515_calib.json")
+shutil.copyfile(os.path.join(dataset_path, OAK_SAVE_FOLDER, OAK_CALIB_FILE), f"{args.output_dir}/oak_calib.json")
 

@@ -126,3 +126,12 @@ def guided_metrics(disp, gt, valid):
     rms = np.sqrt( rms[valid>0].mean() )
     return {'bad 1.0':bad1, 'bad 2.0':bad2, 'bad 3.0': bad3, 'bad 4.0':bad4, 'avgerr':avgerr, 'rms':rms, 'errormap':error*(valid>0)}
 
+
+# a function to resize an image to a defined H W size
+def resize_image(image, H, W):
+    if isinstance(image, list):
+        return [cv2.resize(img.copy(), (W, H), interpolation=cv2.INTER_LINEAR) for img in image]
+    
+    return cv2.resize(image.copy(), (W, H), interpolation=cv2.INTER_LINEAR)
+
+

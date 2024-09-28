@@ -13,7 +13,7 @@ from mycoda import SlidingWindowDevice, L515FrameWrapper
 from utils import add_title_description
 
 L515_FPS = 30
-OAK_FPS = 60
+OAK_FPS = 30
 SYNC_TH_MS = 10/1000.0
 
 MAX_BUFFER_SIZE = 5
@@ -26,6 +26,16 @@ OAK_LRC = True
 OAK_EXTENDED_DISPARITY = False
 OAK_FRACTIONAL_BITS = 3
 OAK_DISPARITY_DIV = 2 ** OAK_FRACTIONAL_BITS if OAK_SUBPIXEL else 1
+OAK_RESOLUTION = dai.MonoCameraProperties.SensorResolution.THE_400_P
+
+OAK_RESOLUTION_DICT = {
+    dai.MonoCameraProperties.SensorResolution.THE_400_P: (400, 640),
+    dai.MonoCameraProperties.SensorResolution.THE_480_P: (480, 640),
+    dai.MonoCameraProperties.SensorResolution.THE_720_P: (720, 1280),
+    dai.MonoCameraProperties.SensorResolution.THE_800_P: (800, 1280),
+}
+
+L515_RESOLUTION = (480, 640)
 
 L515_SAVE_FOLDER = "l515"
 L515_COLOR_FOLDER = "color"
@@ -64,10 +74,10 @@ def slave(thread_id, args):
     pipeline_lidar = rs.pipeline() 
     config = rs.config()
 
-    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, L515_FPS) 
-    config.enable_stream(rs.stream.confidence, 640, 480, rs.format.raw8, L515_FPS) 
-    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, L515_FPS)
-    config.enable_stream(rs.stream.infrared, 640, 480, rs.format.y8, L515_FPS)
+    config.enable_stream(rs.stream.depth, L515_RESOLUTION[1], L515_RESOLUTION[0], rs.format.z16, L515_FPS) 
+    config.enable_stream(rs.stream.confidence, L515_RESOLUTION[1], L515_RESOLUTION[0], rs.format.raw8, L515_FPS) 
+    config.enable_stream(rs.stream.color, L515_RESOLUTION[1], L515_RESOLUTION[0], rs.format.bgr8, L515_FPS)
+    config.enable_stream(rs.stream.infrared, L515_RESOLUTION[1], L515_RESOLUTION[0], rs.format.y8, L515_FPS)
     
     try:
         pipeline_lidar.start(config)
@@ -120,8 +130,8 @@ def slave(thread_id, args):
                         l515_RT_DEPTH_COLOR[:3, 3] = np.array(_l515_RT_DEPTH_COLOR.translation).flatten()
 
                         calib_dict = {
-                            "K_depth": [[depth_intrinsics.fx, 0.0, depth_intrinsics.ppx], [0.0, depth_intrinsics.fy, depth_intrinsics.ppy], [0.0, 0.0, 1.0]],
-                            "K_color": [[color_intrinsics.fx, 0.0, color_intrinsics.ppx], [0.0, color_intrinsics.fy, color_intrinsics.ppy], [0.0, 0.0, 1.0]],
+                            f"K_depth_{L515_RESOLUTION[0]}x{L515_RESOLUTION[1]}": [[depth_intrinsics.fx, 0.0, depth_intrinsics.ppx], [0.0, depth_intrinsics.fy, depth_intrinsics.ppy], [0.0, 0.0, 1.0]],
+                            f"K_color_{L515_RESOLUTION[0]}x{L515_RESOLUTION[1]}": [[color_intrinsics.fx, 0.0, color_intrinsics.ppx], [0.0, color_intrinsics.fy, color_intrinsics.ppy], [0.0, 0.0, 1.0]],
                             "RT_color_depth": l515_RT_COLOR_DEPTH.tolist(),
                             "RT_depth_color": l515_RT_DEPTH_COLOR.tolist(),
                         }
@@ -184,9 +194,9 @@ def main(args):
     vanilla_sgm_node = pipeline_OAK.createStereoDepth()
 
     # Configure cameras: set fps lower than L515 to better accumulate depth frames
-    left_node.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)  
+    left_node.setResolution(OAK_RESOLUTION)  
     left_node.setFps(OAK_FPS) 
-    right_node.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)  
+    right_node.setResolution(OAK_RESOLUTION)  
     right_node.setFps(OAK_FPS)  
     left_node.setCamera("left")
     right_node.setCamera("right")
@@ -199,7 +209,7 @@ def main(args):
     vanilla_sgm_node.setSubpixel(OAK_SUBPIXEL)
     vanilla_sgm_node.setSubpixelFractionalBits(OAK_FRACTIONAL_BITS)
     vanilla_sgm_node.setDepthAlign(dai.RawStereoDepthConfig.AlgorithmControl.DepthAlign.RECTIFIED_LEFT)
-    # vanilla_sgm_node.setDepthAlign(dai.CameraBoardSocket.LEFT)
+    # vanilla_sgm_node.setDepthAlign(dai.CameraBoardSocket.CAM_B)
     vanilla_sgm_node.setRuntimeModeSwitch(True)
 
     # Create in/out channels
@@ -234,14 +244,27 @@ def main(args):
 
         if not calibration_data_retrived:
             calibData = device.readCalibration()
-            intrinsics_left = np.array(calibData.getCameraIntrinsics(dai.CameraBoardSocket.LEFT))
-            intrinsics_right = np.array(calibData.getCameraIntrinsics(dai.CameraBoardSocket.LEFT))
-            baseline = calibData.getBaselineDistance(dai.CameraBoardSocket.LEFT, dai.CameraBoardSocket.RIGHT)
+            baseline = calibData.getBaselineDistance(dai.CameraBoardSocket.CAM_B, dai.CameraBoardSocket.CAM_C)
+
+            D_left = np.array(calibData.getDistortionCoefficients(dai.CameraBoardSocket.CAM_B))
+            D_left = {name:value for (name, value) in zip(["k1","k2","p1","p2","k3","k4","k5","k6"], D_left[:8])}
+            D_right = np.array(calibData.getDistortionCoefficients(dai.CameraBoardSocket.CAM_C))
+            D_right = {name:value for (name, value) in zip(["k1","k2","p1","p2","k3","k4","k5","k6"], D_right[:8])}
+            
             calib_dict = {
-                "K_left": intrinsics_left.tolist(),
-                "K_right": intrinsics_right.tolist(),
-                "baseline": baseline,
+                "baseline": baseline / 100.0,
+                "RT_rgb_left": np.array(calibData.getCameraExtrinsics(dai.CameraBoardSocket.CAM_B, dai.CameraBoardSocket.CAM_A)).tolist(),
+                "RT_right_left": np.array(calibData.getCameraExtrinsics(dai.CameraBoardSocket.CAM_B, dai.CameraBoardSocket.CAM_C)).tolist(),
+                "R_leftr": np.array(calibData.getStereoLeftRectificationRotation()).tolist(),
+                "R_rightr": np.array(calibData.getStereoRightRectificationRotation()).tolist(),
+                "D_left": D_left,
+                "D_right": D_right,
             }
+
+            for mono_res in OAK_RESOLUTION_DICT.keys():
+                _H, _W = OAK_RESOLUTION_DICT[mono_res]
+                calib_dict[f"K_left_{_H}x{_W}"] = np.array(calibData.getCameraIntrinsics(dai.CameraBoardSocket.CAM_B, _W, _H)).tolist()
+                calib_dict[f"K_right_{_H}x{_W}"] = np.array(calibData.getCameraIntrinsics(dai.CameraBoardSocket.CAM_C, _W, _H)).tolist()
 
             with open(os.path.join(args.outdir, OAK_SAVE_FOLDER, OAK_CALIB_FILE), "w") as f:
                 json.dump(calib_dict, f, indent=4)
